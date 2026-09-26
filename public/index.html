@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#0a0b0f">
+  <meta name="description" content="Our Family — a private family gallery.">
+  <title>Our Family</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600&family=Playfair+Display:wght@500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <div class="ambient" aria-hidden="true"></div>
+  <main id="app">
+    <section id="login" class="login-screen" aria-labelledby="login-title">
+      <div class="login-backdrop"></div>
+      <div class="login-orb orb-a"></div><div class="login-orb orb-b"></div>
+      <form id="login-form" class="glass login-card" autocomplete="off">
+        <div class="eyebrow">PRIVATE FAMILY ARCHIVE</div>
+        <h1 id="login-title">Our Family</h1>
+        <p class="login-copy">A little place for the moments that matter.</p>
+        <label class="field"><span>Username</span><input id="username" name="login_user" autocomplete="off" required></label>
+        <label class="field"><span>Password</span><input id="password" name="password" type="password" autocomplete="new-password" required></label>
+        <button class="enter-button" type="submit"><span>Enter</span><i>↗</i></button>
+        <p id="login-error" class="error" role="alert" hidden>That username or password isn't correct.</p>
+        <div class="privacy-note">Private access · One family account</div>
+      </form>
+    </section>
+
+    <section id="gallery" class="gallery" hidden aria-label="Our Family gallery">
+      <div id="slides" class="slides"></div>
+      <div class="topbar glass">
+        <div class="brand"><span class="brand-dot"></span><span>Our Family</span></div>
+        <div class="top-actions">
+          <button id="music-button" class="icon-button" aria-label="Music controls" title="Music controls">♫</button>
+          <button id="logout-button" class="icon-button" aria-label="Log out" title="Log out">↗</button>
+        </div>
+      </div>
+      <div id="dots" class="dots" aria-label="Gallery position"></div>
+      <div class="scroll-hint" id="scroll-hint"><span>SCROLL</span><i></i></div>
+      <div id="music-panel" class="glass music-panel" hidden>
+        <div class="music-title"><span>Family soundtrack</span><strong id="music-state">Playing</strong></div>
+        <div class="music-controls">
+          <button id="play-toggle" class="music-main" aria-label="Pause music">❚❚</button>
+          <label class="volume"><span>Volume</span><input id="volume" type="range" min="0" max="1" step="0.01" value="0.65"></label>
+          <button id="mute-toggle" class="mini-control" aria-label="Mute">Mute</button>
+        </div>
+      </div>
+      <audio id="audio" loop preload="auto"></audio>
+    </section>
+  </main>
+  <script src="/app.js" defer></script>
+</body>
+</html>
