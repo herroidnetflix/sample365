@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="theme-color" content="#05050a">
-<title>Short Films</title>
+<title>Navvora Telugu</title>
 <style>
   :root {
     color-scheme: dark;
@@ -176,7 +176,7 @@
 <div class="blobs"><div class="blob b1"></div><div class="blob b2"></div><div class="blob b3"></div></div>
 
 <header class="glass" id="header">
-  <div class="brand"><span id="brand">Short Films</span></div>
+  <div class="brand"><span id="brand">Navvora Telugu</span></div>
   <button class="pill-btn glass" id="shuffle">Surprise me</button>
 </header>
 
@@ -220,7 +220,7 @@
 
 <script>
   // ➜ Change your site name here
-  const SITE_NAME = "Short Films";
+  const SITE_NAME = "Navvora Telugu";
 
   const $ = id => document.getElementById(id);
   const video = $("video"), modal = $("modal"), err = $("err");
@@ -500,7 +500,7 @@
   function buildRows() {
     const groups = new Map();
     VIDEOS.forEach(v => {
-      const k = v.category || "Short Films";
+      const k = v.category || "Navvora Telugu";
       if (!groups.has(k)) groups.set(k, []);
       groups.get(k).push(v);
     });
