@@ -151,6 +151,21 @@
   .close:hover { transform: scale(1.12) rotate(90deg); }
   .err { color: #ff9a9a; font-size: .9rem; margin-top: 8px; display: none; }
 
+  .tracks { display: none; gap: 10px 22px; flex-wrap: wrap; padding: 12px 12px 2px; }
+  .tracks.show { display: flex; }
+  .track-group { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .track-group[hidden] { display: none; }
+  .track-label { font-size: .75rem; color: var(--muted); text-transform: uppercase; letter-spacing: .08em; }
+  .tchip {
+    padding: 7px 15px; border-radius: 999px; font-size: .86rem; font-weight: 600;
+    background: rgba(255,255,255,.1); border: 1px solid rgba(255,255,255,.18);
+    transition: transform .35s var(--spring), background .25s, color .25s;
+  }
+  .tchip:hover { transform: scale(1.07); }
+  .tchip.active { background: #fff; color: #000; border-color: #fff; }
+  video::cue { font-size: 1.1em; background: rgba(0,0,0,.6); color: #fff; }
+  .apps { display: flex; align-items: center; gap: 8px 12px; flex-wrap: wrap; padding: 10px 12px 0; }
+
   .state { text-align: center; padding: 30vh 5vw; color: var(--muted); }
   footer { text-align: center; color: var(--muted); font-size: .8rem; padding: 10px 0 40px; }
 
@@ -186,6 +201,14 @@
   <div class="dialog glass" role="dialog" aria-modal="true">
     <button class="close glass" id="close" aria-label="Close">✕</button>
     <video id="video" controls playsinline preload="metadata"></video>
+    <div class="tracks" id="tracks">
+      <div class="track-group" id="langGroup" hidden><span class="track-label">Language</span><div class="track-group" id="langChips"></div></div>
+      <div class="track-group" id="subGroup" hidden><span class="track-label">Subtitles</span><div class="track-group" id="subChips"></div></div>
+    </div>
+    <div class="apps">
+      <span class="track-label">Open in app</span>
+      <div class="track-group" id="appChips"></div>
+    </div>
     <div class="dialog-info">
       <h3 id="mTitle"></h3>
       <div class="meta" id="mMeta"></div>
@@ -231,14 +254,202 @@
     $("mTitle").textContent = v.title || "Untitled";
     fillMeta($("mMeta"), v);
     $("mDesc").textContent = v.description || "";
-    video.src = v.url;
-    video.load();
+    current = v; activeUrl = v.url;
+
+    // external subtitle files (.vtt) listed in videos.json
+    video.querySelectorAll("track").forEach(t => t.remove());
+    extTracks = [];
+    (v.subtitles || []).forEach((s, i) => {
+      const t = document.createElement("track");
+      t.kind = "subtitles";
+      t.label = s.label || s.lang || ("Subtitle " + (i + 1));
+      t.srclang = s.lang || "";
+      t.src = s.url;
+      video.append(t);
+      t.track.mode = "disabled";
+      extTracks.push(t.track);
+    });
+
     modal.classList.add("open");
     modal.setAttribute("aria-hidden", "false");
     document.body.style.overflow = "hidden";
-    video.play().catch(() => {});
+    buildTrackUI();
+    buildAppButtons();
+    setSource(v.url, 0, true);
+  }
+
+  /* ---------- Languages, subtitles, HLS ---------- */
+  let hls = null, current = null, activeUrl = "", extTracks = [];
+
+  function showErr(msg) { err.textContent = msg; err.style.display = "block"; }
+  function destroyHls() { if (hls) { hls.destroy(); hls = null; } }
+
+  function loadHlsLib() {
+    if (window.Hls) return Promise.resolve();
+    return new Promise((resolve, reject) => {
+      const s = document.createElement("script");
+      s.src = "https://cdn.jsdelivr.net/npm/hls.js@1/dist/hls.min.js";
+      s.onload = resolve;
+      s.onerror = () => reject(new Error("Could not load the streaming library."));
+      document.head.append(s);
+    });
+  }
+
+  async function setSource(url, resumeAt, autoplay) {
+    destroyHls();
+    err.style.display = "none";
+    const isHls = /\.m3u8(\?|$)/i.test(url);
+    if (isHls && !video.canPlayType("application/vnd.apple.mpegurl")) {
+      try { await loadHlsLib(); } catch (e) { showErr(e.message); return; }
+      if (!window.Hls || !Hls.isSupported()) { showErr("This browser can't play HLS streams."); return; }
+      hls = new Hls();
+      hls.loadSource(url);
+      hls.attachMedia(video);
+      hls.on(Hls.Events.MANIFEST_PARSED, buildTrackUI);
+      hls.on(Hls.Events.AUDIO_TRACKS_UPDATED, buildTrackUI);
+      hls.on(Hls.Events.SUBTITLE_TRACKS_UPDATED, buildTrackUI);
+      hls.on(Hls.Events.ERROR, (_, d) => { if (d.fatal) showErr("Stream error: " + d.details); });
+    } else {
+      video.src = url;
+      video.load();
+    }
+    if (resumeAt > 0) video.addEventListener("loadedmetadata", () => { video.currentTime = resumeAt; }, { once: true });
+    if (autoplay) video.play().catch(() => {});
+  }
+
+  function switchLanguage(url) {
+    const t = video.currentTime, playing = !video.paused;
+    activeUrl = url;
+    buildAppButtons();
+    setSource(url, t, playing);
+  }
+
+  const LANGS = { te:"Telugu", tel:"Telugu", hi:"Hindi", hin:"Hindi", ta:"Tamil", tam:"Tamil", ml:"Malayalam", mal:"Malayalam",
+    kn:"Kannada", kan:"Kannada", en:"English", eng:"English", bn:"Bengali", ben:"Bengali", mr:"Marathi", mar:"Marathi",
+    ur:"Urdu", urd:"Urdu", gu:"Gujarati", guj:"Gujarati", pa:"Punjabi", pan:"Punjabi", fr:"French", fre:"French", fra:"French",
+    es:"Spanish", spa:"Spanish", ja:"Japanese", jpn:"Japanese", ko:"Korean", kor:"Korean", zh:"Chinese", chi:"Chinese", zho:"Chinese", und:"Default" };
+  const pretty = l => LANGS[String(l).toLowerCase()] || l;
+
+  function chips(groupId, boxId, options, activeIdx) {
+    const group = $(groupId), box = $(boxId);
+    box.textContent = "";
+    group.hidden = options.length < 2;
+    options.forEach((o, i) => {
+      const b = el("button", "tchip" + (i === activeIdx ? " active" : ""), pretty(o.label));
+      b.onclick = () => {
+        o.select();
+        Array.from(box.children).forEach((c, j) => c.classList.toggle("active", j === i));
+      };
+      box.append(b);
+    });
+    $("tracks").classList.toggle("show", !$("langGroup").hidden || !$("subGroup").hidden);
+  }
+
+  function buildTrackUI() {
+    const v = current;
+    if (!v) return;
+
+    /* Language (audio) */
+    let langs = [], langActive = 0;
+    if (v.languages && v.languages.length) {
+      // separate video file per language (listed in videos.json)
+      const all = [{ label: v.defaultLanguage || "Original", url: v.url }, ...v.languages];
+      langs = all.map(l => ({ label: l.label || "Language", select: () => switchLanguage(l.url) }));
+      langActive = Math.max(0, all.findIndex(l => l.url === activeUrl));
+    } else if (hls && hls.audioTracks && hls.audioTracks.length > 1) {
+      // audio renditions inside an HLS stream
+      langs = hls.audioTracks.map((t, i) => ({ label: t.lang || t.name || ("Audio " + (i + 1)), select: () => { hls.audioTrack = i; } }));
+      langActive = Math.max(0, hls.audioTrack);
+    } else if (video.audioTracks && video.audioTracks.length > 1) {
+      // tracks inside the file (only Safari exposes these)
+      const at = video.audioTracks;
+      langs = Array.from(at).map((t, i) => ({
+        label: t.label || t.language || ("Audio " + (i + 1)),
+        select: () => { for (let j = 0; j < at.length; j++) at[j].enabled = (j === i); }
+      }));
+      langActive = Math.max(0, Array.from(at).findIndex(t => t.enabled));
+    }
+    chips("langGroup", "langChips", langs, langActive);
+
+    /* Subtitles */
+    const hide = () => {
+      Array.from(video.textTracks).forEach(t => { t.mode = "disabled"; });
+      if (hls) hls.subtitleTrack = -1;
+    };
+    const subs = [{ label: "Off", select: hide, active: () => false }];
+    extTracks.forEach(t => subs.push({ label: t.label, select: () => { hide(); t.mode = "showing"; }, active: () => t.mode === "showing" }));
+    if (hls && hls.subtitleTracks) {
+      hls.subtitleTracks.forEach((t, i) => subs.push({
+        label: t.name || t.lang || ("Subtitle " + (i + 1)),
+        select: () => { hide(); hls.subtitleDisplay = true; hls.subtitleTrack = i; },
+        active: () => hls.subtitleTrack === i
+      }));
+    } else {
+      Array.from(video.textTracks)
+        .filter(t => !extTracks.includes(t) && /subtitles|captions/.test(t.kind))
+        .forEach(t => subs.push({ label: t.label || t.language || "Subtitle", select: () => { hide(); t.mode = "showing"; }, active: () => t.mode === "showing" }));
+    }
+    const on = subs.findIndex((s, i) => i > 0 && s.active());
+    chips("subGroup", "subChips", subs, on < 0 ? 0 : on);
+  }
+  video.addEventListener("loadedmetadata", buildTrackUI);
+
+  /* ---------- Open in external app (VLC / MX Player) ---------- */
+  const UA = navigator.userAgent;
+  const IS_ANDROID = /Android/i.test(UA);
+  const IS_IOS = /iPhone|iPad|iPod/i.test(UA) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+
+  function androidIntent(url, pkg, title) {
+    const scheme = new URL(url).protocol.replace(":", "");
+    const rest = url.slice(scheme.length + 1);            // "//host/path?query"
+    return "intent:" + rest + "#Intent;action=android.intent.action.VIEW;scheme=" + scheme +
+      ";type=video/*;package=" + pkg + ";S.title=" + encodeURIComponent(title) + ";end";
+  }
+
+  function downloadM3U(url, title) {
+    const text = "#EXTM3U\n#EXTINF:-1," + title.replace(/[\r\n]+/g, " ") + "\n" + url + "\n";
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(new Blob([text], { type: "audio/x-mpegurl" }));
+    a.download = (title.replace(/[^\w\-]+/g, "_") || "video") + ".m3u";
+    document.body.append(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 3000);
+  }
+
+  async function copyText(text, btn) {
+    try { await navigator.clipboard.writeText(text); }
+    catch (e) { prompt("Copy this link:", text); return; }
+    const old = btn.textContent;
+    btn.textContent = "Copied ✓";
+    setTimeout(() => { btn.textContent = old; }, 1500);
+  }
+
+  function buildAppButtons() {
+    const box = $("appChips");
+    box.textContent = "";
+    const v = current;
+    if (!v) return;
+    const url = activeUrl || v.url, title = v.title || "Video";
+    const add = (label, fn, pause = true) => {
+      const b = el("button", "tchip", label);
+      b.onclick = () => { if (pause) video.pause(); fn(b); };
+      box.append(b);
+    };
+    if (IS_ANDROID) {
+      add("VLC", () => { location.href = androidIntent(url, "org.videolan.vlc", title); });
+      add("MX Player", () => { location.href = androidIntent(url, "com.mxtech.videoplayer.ad", title); });
+    } else if (IS_IOS) {
+      add("VLC", () => { location.href = "vlc-x-callback://x-callback-url/stream?url=" + encodeURIComponent(url); });
+    } else {
+      add("VLC / any player (.m3u)", () => downloadM3U(url, title));
+    }
+    add("Copy link", b => copyText(url, b), false);
   }
   function closePlayer() {
+    destroyHls();
+    current = null;
+    video.querySelectorAll("track").forEach(t => t.remove());
+    extTracks = [];
+    $("tracks").classList.remove("show");
     video.pause();
     video.removeAttribute("src");
     video.load();                       // stops the download
