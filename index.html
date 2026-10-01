@@ -171,6 +171,35 @@
 
   @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition-duration: .01ms !important; } .card { opacity: 1; transform: none; } }
 </style>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/shaka-player@4.16.12/dist/controls.css">
+<style>
+  /* Shaka Player integration */
+  .shaka-video-container {
+    width: 100%;
+    aspect-ratio: 16 / 9;
+    border-radius: 18px;
+    overflow: hidden;
+    background: #000;
+  }
+  .shaka-video-container video {
+    width: 100%;
+    height: 100%;
+    max-height: none;
+    border-radius: 0;
+    object-fit: contain;
+  }
+  .shaka-controls-container {
+    border-radius: 0 0 18px 18px;
+  }
+  .shaka-overflow-menu,
+  .shaka-settings-menu {
+    border-radius: 16px !important;
+    backdrop-filter: blur(22px) saturate(160%);
+    -webkit-backdrop-filter: blur(22px) saturate(160%);
+    background: rgba(20,20,28,.88) !important;
+    border: 1px solid rgba(255,255,255,.16);
+  }
+</style>
 </head>
 <body>
 <div class="blobs"><div class="blob b1"></div><div class="blob b2"></div><div class="blob b3"></div></div>
@@ -200,7 +229,9 @@
 <div class="modal" id="modal" aria-hidden="true">
   <div class="dialog glass" role="dialog" aria-modal="true">
     <button class="close glass" id="close" aria-label="Close">✕</button>
-    <video id="video" controls playsinline preload="metadata"></video>
+    <div class="shaka-video-container" id="videoContainer">
+      <video id="video" playsinline preload="metadata"></video>
+    </div>
     <div class="tracks" id="tracks">
       <div class="track-group" id="langGroup" hidden><span class="track-label">Language</span><div class="track-group" id="langChips"></div></div>
       <div class="track-group" id="subGroup" hidden><span class="track-label">Subtitles</span><div class="track-group" id="subChips"></div></div>
@@ -218,6 +249,7 @@
   </div>
 </div>
 
+<script src="https://cdn.jsdelivr.net/npm/shaka-player@4.16.12/dist/shaka-player.ui.js"></script>
 <script>
   // ➜ Change your site name here
   const SITE_NAME = "Navvora Telugu";
@@ -279,42 +311,50 @@
   }
 
   /* ---------- Languages, subtitles, HLS ---------- */
-  let hls = null, current = null, activeUrl = "", extTracks = [];
+  let shakaPlayer = null, shakaUi = null, current = null, activeUrl = "", extTracks = [];
 
   function showErr(msg) { err.textContent = msg; err.style.display = "block"; }
-  function destroyHls() { if (hls) { hls.destroy(); hls = null; } }
+  async function initShaka() {
+    if (shakaPlayer) return;
+    if (!window.shaka) throw new Error("Shaka Player library failed to load.");
+    shaka.polyfill.installAll();
+    if (!shaka.Player.isBrowserSupported()) {
+      throw new Error("This browser does not support Shaka Player.");
+    }
 
-  function loadHlsLib() {
-    if (window.Hls) return Promise.resolve();
-    return new Promise((resolve, reject) => {
-      const s = document.createElement("script");
-      s.src = "https://cdn.jsdelivr.net/npm/hls.js@1/dist/hls.min.js";
-      s.onload = resolve;
-      s.onerror = () => reject(new Error("Could not load the streaming library."));
-      document.head.append(s);
+    shakaPlayer = new shaka.Player(video);
+    shakaUi = new shaka.ui.Overlay(shakaPlayer, $("videoContainer"), video);
+
+    shakaPlayer.addEventListener("error", e => {
+      const d = e.detail || {};
+      showErr("Shaka playback error: " + (d.code || "unknown"));
     });
+    shakaPlayer.addEventListener("trackschanged", buildTrackUI);
+    shakaPlayer.addEventListener("adaptation", buildTrackUI);
   }
 
   async function setSource(url, resumeAt, autoplay) {
-    destroyHls();
     err.style.display = "none";
-    const isHls = /\.m3u8(\?|$)/i.test(url);
-    if (isHls && !video.canPlayType("application/vnd.apple.mpegurl")) {
-      try { await loadHlsLib(); } catch (e) { showErr(e.message); return; }
-      if (!window.Hls || !Hls.isSupported()) { showErr("This browser can't play HLS streams."); return; }
-      hls = new Hls();
-      hls.loadSource(url);
-      hls.attachMedia(video);
-      hls.on(Hls.Events.MANIFEST_PARSED, buildTrackUI);
-      hls.on(Hls.Events.AUDIO_TRACKS_UPDATED, buildTrackUI);
-      hls.on(Hls.Events.SUBTITLE_TRACKS_UPDATED, buildTrackUI);
-      hls.on(Hls.Events.ERROR, (_, d) => { if (d.fatal) showErr("Stream error: " + d.details); });
-    } else {
-      video.src = url;
-      video.load();
+    try {
+      await initShaka();
+      activeUrl = url;
+
+      await shakaPlayer.load(url);
+
+      if (resumeAt > 0 && isFinite(resumeAt)) {
+        try { video.currentTime = resumeAt; } catch (_) {}
+      }
+
+      buildTrackUI();
+      buildAppButtons();
+
+      if (autoplay) {
+        video.play().catch(() => {});
+      }
+    } catch (e) {
+      console.error(e);
+      showErr("Playback failed: " + (e && e.message ? e.message : "unsupported stream"));
     }
-    if (resumeAt > 0) video.addEventListener("loadedmetadata", () => { video.currentTime = resumeAt; }, { once: true });
-    if (autoplay) video.play().catch(() => {});
   }
 
   function switchLanguage(url) {
@@ -356,33 +396,49 @@
       const all = [{ label: v.defaultLanguage || "Original", url: v.url }, ...v.languages];
       langs = all.map(l => ({ label: l.label || "Language", select: () => switchLanguage(l.url) }));
       langActive = Math.max(0, all.findIndex(l => l.url === activeUrl));
-    } else if (hls && hls.audioTracks && hls.audioTracks.length > 1) {
-      // audio renditions inside an HLS stream
-      langs = hls.audioTracks.map((t, i) => ({ label: t.lang || t.name || ("Audio " + (i + 1)), select: () => { hls.audioTrack = i; } }));
-      langActive = Math.max(0, hls.audioTrack);
-    } else if (video.audioTracks && video.audioTracks.length > 1) {
-      // tracks inside the file (only Safari exposes these)
-      const at = video.audioTracks;
-      langs = Array.from(at).map((t, i) => ({
-        label: t.label || t.language || ("Audio " + (i + 1)),
-        select: () => { for (let j = 0; j < at.length; j++) at[j].enabled = (j === i); }
+    } else if (shakaPlayer) {
+      // Audio tracks inside HLS/DASH/other Shaka-supported media.
+      const tracks = shakaPlayer.getVariantTracks()
+        .filter(t => t.audioId != null || t.language || t.audioCodec)
+        .filter((t, i, arr) => arr.findIndex(x =>
+          (x.language || "") === (t.language || "") &&
+          (x.audioCodec || "") === (t.audioCodec || "") &&
+          (x.audioChannelsCount || 0) === (t.audioChannelsCount || 0)
+        ) === i);
+
+      langs = tracks.map(t => ({
+        label: t.label || pretty(t.language) || ("Audio " + (t.id || "")),
+        select: () => {
+          const variants = shakaPlayer.getVariantTracks().filter(x =>
+            (x.language || "") === (t.language || "") &&
+            (x.audioCodec || "") === (t.audioCodec || "") &&
+            (x.audioChannelsCount || 0) === (t.audioChannelsCount || 0)
+          );
+          if (variants.length) shakaPlayer.selectVariantTrack(variants[0], true);
+          buildTrackUI();
+        }
       }));
-      langActive = Math.max(0, Array.from(at).findIndex(t => t.enabled));
-    }
+      const active = shakaPlayer.getVariantTracks().find(t => t.active);
+      if (active) {
+        langActive = Math.max(0, langs.findIndex(l =>
+          l.label === (active.label || pretty(active.language) || ("Audio " + (active.id || "")))
+        ));
+      }
     chips("langGroup", "langChips", langs, langActive);
 
     /* Subtitles */
     const hide = () => {
       Array.from(video.textTracks).forEach(t => { t.mode = "disabled"; });
-      if (hls) hls.subtitleTrack = -1;
+      if (shakaPlayer) shakaPlayer.setTextTrackVisibility(false);
     };
     const subs = [{ label: "Off", select: hide, active: () => false }];
     extTracks.forEach(t => subs.push({ label: t.label, select: () => { hide(); t.mode = "showing"; }, active: () => t.mode === "showing" }));
-    if (hls && hls.subtitleTracks) {
-      hls.subtitleTracks.forEach((t, i) => subs.push({
-        label: t.name || t.lang || ("Subtitle " + (i + 1)),
-        select: () => { hide(); hls.subtitleDisplay = true; hls.subtitleTrack = i; },
-        active: () => hls.subtitleTrack === i
+    if (shakaPlayer) {
+      const textTracks = shakaPlayer.getTextTracks ? shakaPlayer.getTextTracks() : [];
+      textTracks.forEach((t, i) => subs.push({
+        label: t.label || pretty(t.language) || ("Subtitle " + (i + 1)),
+        select: () => { hide(); shakaPlayer.setTextTrackVisibility(true); shakaPlayer.selectTextTrack(t); },
+        active: () => t.active
       }));
     } else {
       Array.from(video.textTracks)
@@ -444,8 +500,10 @@
     }
     add("Copy link", b => copyText(url, b), false);
   }
-  function closePlayer() {
-    destroyHls();
+  async function closePlayer() {
+    if (shakaPlayer) {
+      try { await shakaPlayer.unload(); } catch (_) {}
+    }
     current = null;
     video.querySelectorAll("track").forEach(t => t.remove());
     extTracks = [];
@@ -458,11 +516,8 @@
     document.body.style.overflow = "";
   }
   video.addEventListener("error", () => {
-    const codes = { 2: "network error (blocked, expired, or server asleep)", 3: "file can't be decoded (codec or corrupt)", 4: "format not supported, or link isn't a playable video" };
-    const c = video.error ? video.error.code : 0;
-    if (!video.getAttribute("src")) return;
-    err.textContent = "Playback failed, code " + c + ": " + (codes[c] || "unknown");
-    err.style.display = "block";
+    if (!shakaPlayer) return;
+    if (video.error) showErr("Video element error: " + video.error.code);
   });
   $("close").onclick = closePlayer;
   modal.addEventListener("click", e => { if (e.target === modal) closePlayer(); });
