@@ -278,31 +278,49 @@
     setSource(v.url, 0, true);
   }
 
-  /* ---------- Languages / subtitles / direct files ---------- */
-  let current = null, activeUrl = "", extTracks = [];
+  /* ---------- Languages, subtitles, HLS ---------- */
+  let hls = null, current = null, activeUrl = "", extTracks = [];
 
   function showErr(msg) { err.textContent = msg; err.style.display = "block"; }
+  function destroyHls() { if (hls) { hls.destroy(); hls = null; } }
+
+  function loadHlsLib() {
+    if (window.Hls) return Promise.resolve();
+    return new Promise((resolve, reject) => {
+      const s = document.createElement("script");
+      s.src = "https://cdn.jsdelivr.net/npm/hls.js@1/dist/hls.min.js";
+      s.onload = resolve;
+      s.onerror = () => reject(new Error("Could not load the streaming library."));
+      document.head.append(s);
+    });
+  }
 
   async function setSource(url, resumeAt, autoplay) {
+    destroyHls();
     err.style.display = "none";
-    activeUrl = url;
-    video.removeAttribute("src");
-    video.load();
-    video.src = url;
-    video.load();
-    if (resumeAt > 0) {
-      video.addEventListener("loadedmetadata", () => {
-        try { video.currentTime = Math.min(resumeAt, video.duration || resumeAt); } catch (_) {}
-      }, { once: true });
+    const isHls = /\.m3u8(\?|$)/i.test(url);
+    if (isHls && !video.canPlayType("application/vnd.apple.mpegurl")) {
+      try { await loadHlsLib(); } catch (e) { showErr(e.message); return; }
+      if (!window.Hls || !Hls.isSupported()) { showErr("This browser can't play HLS streams."); return; }
+      hls = new Hls();
+      hls.loadSource(url);
+      hls.attachMedia(video);
+      hls.on(Hls.Events.MANIFEST_PARSED, buildTrackUI);
+      hls.on(Hls.Events.AUDIO_TRACKS_UPDATED, buildTrackUI);
+      hls.on(Hls.Events.SUBTITLE_TRACKS_UPDATED, buildTrackUI);
+      hls.on(Hls.Events.ERROR, (_, d) => { if (d.fatal) showErr("Stream error: " + d.details); });
+    } else {
+      video.src = url;
+      video.load();
     }
-    if (autoplay) {
-      try { await video.play(); } catch (_) {}
-    }
+    if (resumeAt > 0) video.addEventListener("loadedmetadata", () => { video.currentTime = resumeAt; }, { once: true });
+    if (autoplay) video.play().catch(() => {});
   }
 
   function switchLanguage(url) {
-    const t = video.currentTime || 0;
-    const playing = !video.paused;
+    const t = video.currentTime, playing = !video.paused;
+    activeUrl = url;
+    buildAppButtons();
     setSource(url, t, playing);
   }
 
@@ -331,12 +349,19 @@
     const v = current;
     if (!v) return;
 
+    /* Language (audio) */
     let langs = [], langActive = 0;
     if (v.languages && v.languages.length) {
+      // separate video file per language (listed in videos.json)
       const all = [{ label: v.defaultLanguage || "Original", url: v.url }, ...v.languages];
       langs = all.map(l => ({ label: l.label || "Language", select: () => switchLanguage(l.url) }));
       langActive = Math.max(0, all.findIndex(l => l.url === activeUrl));
+    } else if (hls && hls.audioTracks && hls.audioTracks.length > 1) {
+      // audio renditions inside an HLS stream
+      langs = hls.audioTracks.map((t, i) => ({ label: t.lang || t.name || ("Audio " + (i + 1)), select: () => { hls.audioTrack = i; } }));
+      langActive = Math.max(0, hls.audioTrack);
     } else if (video.audioTracks && video.audioTracks.length > 1) {
+      // tracks inside the file (only Safari exposes these)
       const at = video.audioTracks;
       langs = Array.from(at).map((t, i) => ({
         label: t.label || t.language || ("Audio " + (i + 1)),
@@ -346,19 +371,28 @@
     }
     chips("langGroup", "langChips", langs, langActive);
 
-    const hide = () => Array.from(video.textTracks).forEach(t => { t.mode = "disabled"; });
+    /* Subtitles */
+    const hide = () => {
+      Array.from(video.textTracks).forEach(t => { t.mode = "disabled"; });
+      if (hls) hls.subtitleTrack = -1;
+    };
     const subs = [{ label: "Off", select: hide, active: () => false }];
     extTracks.forEach(t => subs.push({ label: t.label, select: () => { hide(); t.mode = "showing"; }, active: () => t.mode === "showing" }));
-    Array.from(video.textTracks)
-      .filter(t => !extTracks.includes(t) && /subtitles|captions/.test(t.kind))
-      .forEach(t => subs.push({ label: t.label || t.language || "Subtitle", select: () => { hide(); t.mode = "showing"; }, active: () => t.mode === "showing" }));
-    chips("subGroup", "subChips", subs, 0);
+    if (hls && hls.subtitleTracks) {
+      hls.subtitleTracks.forEach((t, i) => subs.push({
+        label: t.name || t.lang || ("Subtitle " + (i + 1)),
+        select: () => { hide(); hls.subtitleDisplay = true; hls.subtitleTrack = i; },
+        active: () => hls.subtitleTrack === i
+      }));
+    } else {
+      Array.from(video.textTracks)
+        .filter(t => !extTracks.includes(t) && /subtitles|captions/.test(t.kind))
+        .forEach(t => subs.push({ label: t.label || t.language || "Subtitle", select: () => { hide(); t.mode = "showing"; }, active: () => t.mode === "showing" }));
+    }
+    const on = subs.findIndex((s, i) => i > 0 && s.active());
+    chips("subGroup", "subChips", subs, on < 0 ? 0 : on);
   }
   video.addEventListener("loadedmetadata", buildTrackUI);
-  video.addEventListener("error", () => {
-    const e = video.error;
-    showErr(e ? "Playback failed. The direct file server may block browser playback (CORS/range requests) or the URL may not be a browser-playable media file." : "Playback failed.");
-  });
 
   /* ---------- Open in external app (VLC / MX Player) ---------- */
   const UA = navigator.userAgent;
@@ -411,6 +445,7 @@
     add("Copy link", b => copyText(url, b), false);
   }
   function closePlayer() {
+    destroyHls();
     current = null;
     video.querySelectorAll("track").forEach(t => t.remove());
     extTracks = [];
